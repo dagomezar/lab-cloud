@@ -1,0 +1,70 @@
+---
+- name: Configuración Completa de Nodo DBRE y MinIO
+  hosts: infrastructure
+  become: yes
+  tasks:
+    - name: Actualizar caché de apt e instalar herramientas
+      apt:
+        name: [qemu-guest-agent, xfsprogs, curl, git, ca-certificates, gnupg]
+        update_cache: yes
+        state: present
+
+    - name: Asegurar que el Agente QEMU esté corriendo
+      systemd:
+        name: qemu-guest-agent
+        state: started
+        enabled: yes
+
+    - name: Formatear el disco de datos (sdb de 15GB)
+      filesystem:
+        fstype: xfs
+        dev: /dev/sdb
+
+    - name: Montar disco en /mnt/data
+      mount:
+        path: /mnt/data
+        src: /dev/sdb
+        fstype: xfs
+        state: mounted
+
+    - name: Permisos para la carpeta de datos
+      file:
+        path: /mnt/data
+        state: directory
+        mode: '0777'
+
+    - name: Instalar Docker mediante script oficial
+      shell: curl -sSL https://get.docker.com | sh
+      args:
+        creates: /usr/bin/docker
+
+    - name: Levantar MinIO con Docker (Versión corregida)
+      docker_container:
+        name: minio
+        image: quay.io/minio/minio
+        state: started
+        restart_policy: always
+        ports:
+          - "9000:9000"
+          - "9001:9001"
+        volumes:
+          - /mnt/data:/data
+        env:
+          MINIO_ROOT_USER: "admin"
+          MINIO_ROOT_PASSWORD: "SoporteDBA_Minio"
+        command: server /data --console-address ":9001"
+
+    - name: Eliminar contenedor viejo si existe
+      shell: docker rm -f minio || true
+
+    - name: Levantar MinIO con Docker (Shell)
+      shell: |
+        docker run -d \
+          --name minio \
+          --restart always \
+          -p 9000:9000 \
+          -p 9001:9001 \
+          -v /mnt/data:/data \
+          -e "MINIO_ROOT_USER=admin" \
+          -e "MINIO_ROOT_PASSWORD=SoporteDBA_Minio" \
+          quay.io/minio/minio server /data --console-address ":9001"

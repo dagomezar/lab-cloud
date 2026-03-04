@@ -1,0 +1,16 @@
+# Terraform
+**/terraform/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+**/*.tfvars
+**/*.log
+
+# Claves SSH (por si acaso generas alguna aquí)
+*.pub
+id_rsa_lab
+
+# Sistema
+.DS_Store
+
+
+
