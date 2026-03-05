@@ -3,8 +3,7 @@
 This repository contains the complete automation to deploy an S3-compatible object storage cluster (MinIO) over a virtualized infrastructure on **Proxmox**.
 
 ## 📝 Project Description
-The goal is to create a private, scalable, and persistent object storage environment using **Infrastructure as Code (IaC)**. The project decouples the "virtual hardware" provisioning (Terraform) from the software configuration and data volume management (Ansible).
-
+The project was developed within a local homelab running Proxmox VE. The goal is to create a private, scalable, and persistent object storage environment using Infrastructure as Code (IaC). This setup decouples the 'virtual hardware' provisioning (Terraform) from the software configuration and data volume management (Ansible).
 
 
 ---
