@@ -68,13 +68,13 @@ Located in `/ansible`, it handles:
 ## 🔍Verification & DBRE Checks
    Verify the database optimization:
 
-   # Check shared memory (Should return 2GB)
+## Check shared memory (Should return 2GB)
    sudo -u postgres psql -c "SHOW shared_buffers;"
 
-   # Verify MinIO connectivity from the DB node
+## Verify MinIO connectivity from the DB node
    sudo -u postgres mc ls lab-s3/db-backups
 
-📋 Requirements
+# 📋 Requirements
    Proxmox VE 7.x/8.x.
    
    Ubuntu 24.04 Cloud Image (Template).
