@@ -1,0 +1,39 @@
+apiVersion: "clickhouse.altinity.com/v1"
+kind: "ClickHouseInstallation"
+metadata:
+  name: "lab-clickhouse"
+  namespace: "sql-analitica"
+spec:
+  configuration:
+    clusters:
+      - name: "lab-cluster"
+        layout:
+          shardsCount: 1
+          replicasCount: 1
+        templates:
+          podTemplate: "clickhouse-v1"
+          dataVolumeClaimTemplate: "clickhouse-storage"
+
+  templates:
+    podTemplates:
+      - name: "clickhouse-v1"
+        spec:
+          containers:
+            - name: "clickhouse"
+              image: "clickhouse/clickhouse-server:latest"
+              resources:
+                requests:
+                  memory: "2Gi"
+                  cpu: "1"
+                limits:
+                  memory: "4Gi"
+                  cpu: "2"
+
+    volumeClaimTemplates:
+      - name: "clickhouse-storage"
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: "10Gi"

@@ -1,70 +1,161 @@
 ---
-- name: Configuración Completa de Nodo DBRE y MinIO
-  hosts: infrastructure
+# ==========================================
+# FASE 1: PREPARACIÓN GLOBAL (Todas las VMs)
+# ==========================================
+- name: Seteo Global de Infraestructura
+  hosts: all
   become: yes
   tasks:
-    - name: Actualizar caché de apt e instalar herramientas
+    - name: 1.1 Configuración Base y Herramientas
       apt:
-        name: [qemu-guest-agent, xfsprogs, curl, git, ca-certificates, gnupg]
-        update_cache: yes
+        name: [qemu-guest-agent, curl, ca-certificates, gnupg, net-tools, iputils-ping, python3-pip]
         state: present
+        update_cache: yes
 
-    - name: Asegurar que el Agente QEMU esté corriendo
-      systemd:
-        name: qemu-guest-agent
-        state: started
-        enabled: yes
-
-    - name: Formatear el disco de datos (sdb de 15GB)
-      filesystem:
-        fstype: xfs
-        dev: /dev/sdb
-
-    - name: Montar disco en /mnt/data
-      mount:
-        path: /mnt/data
-        src: /dev/sdb
-        fstype: xfs
-        state: mounted
-
-    - name: Permisos para la carpeta de datos
-      file:
-        path: /mnt/data
-        state: directory
-        mode: '0777'
-
-    - name: Instalar Docker mediante script oficial
-      shell: curl -sSL https://get.docker.com | sh
-      args:
-        creates: /usr/bin/docker
-
-    - name: Levantar MinIO con Docker (Versión corregida)
-      docker_container:
-        name: minio
-        image: quay.io/minio/minio
-        state: started
-        restart_policy: always
-        ports:
-          - "9000:9000"
-          - "9001:9001"
-        volumes:
-          - /mnt/data:/data
-        env:
-          MINIO_ROOT_USER: "admin"
-          MINIO_ROOT_PASSWORD: "SoporteDBA_Minio"
-        command: server /data --console-address ":9001"
-
-    - name: Eliminar contenedor viejo si existe
-      shell: docker rm -f minio || true
-
-    - name: Levantar MinIO con Docker (Shell)
+    - name: 1.2 Firewall Open-Policy (Interno Lab)
       shell: |
-        docker run -d \
-          --name minio \
-          --restart always \
-          -p 9000:9000 \
-          -p 9001:9001 \
-          -v /mnt/data:/data \
-          -e "MINIO_ROOT_USER=admin" \
-          -e "MINIO_ROOT_PASSWORD=SoporteDBA_Minio" \
-          quay.io/minio/minio server /data --console-address ":9001"
+        ufw disable || true
+        iptables -F
+        iptables -P INPUT ACCEPT
+
+# ==========================================
+# FASE 2: STORAGE LAYER (MinIO .200)
+# ==========================================
+- name: Capa de Almacenamiento (S3 Simulado)
+  hosts: storage_nodes
+  become: yes
+  tasks:
+    - name: 2.1 Descargar e Instalar MinIO
+      shell: |
+        wget https://dl.min.io/server/minio/release/linux-amd64/minio -O /usr/local/bin/minio
+        chmod +x /usr/local/bin/minio
+        mkdir -p /mnt/data
+
+    - name: 2.2 Levantar MinIO en Background
+      shell: |
+        nohup /usr/local/bin/minio server /mnt/data --address ":9000" --console-address ":9001" > /var/log/minio.log 2>&1 &
+      environment:
+        MINIO_ROOT_USER: dbre_admin
+        MINIO_ROOT_PASSWORD: SoporteDBA
+
+# ==========================================
+# FASE 3: DATABASE LAYER (Postgres .201)
+# ==========================================
+- name: Capa de Base de Datos Transaccional
+  hosts: db_nodes
+  become: yes
+  tasks:
+    - name: 3.1 Setup Postgres 16 y Datos de Prueba
+      shell: |
+        apt install -y postgresql-16 python3-psycopg2
+        sed -i "s/^#\?listen_addresses =.*/listen_addresses = '*'/" /etc/postgresql/16/main/postgresql.conf
+        echo "host all all 192.168.1.0/24 md5" >> /etc/postgresql/16/main/pg_hba.conf
+        systemctl restart postgresql
+        sudo -u postgres psql -c "CREATE USER dbre_admin WITH SUPERUSER PASSWORD 'SoporteDBA';" || true
+        sudo -u postgres psql -c "CREATE DATABASE pg_lab;" || true
+        sudo -u postgres psql -d pg_lab -c "CREATE TABLE IF NOT EXISTS productos_nombres (id SERIAL PRIMARY KEY, nombre TEXT);"
+        sudo -u postgres psql -d pg_lab -c "INSERT INTO productos_nombres (nombre) SELECT 'Producto ' || i FROM generate_series(1, 100) AS t(i) ON CONFLICT DO NOTHING;"
+
+# ==========================================
+# FASE 4: ANALYTICAL LAYER (K3s + ClickHouse .203)
+# ==========================================
+- name: Capa Analítica y Federación
+  hosts: k8s_nodes
+  become: yes
+  tasks:
+    - name: 4.1 Instalar K3s y Binarios
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644" sh -
+        ln -sf $(which k3s) /usr/bin/kubectl
+        mkdir -p /home/dbre_admin/.kube
+        cp /etc/rancher/k3s/k3s.yaml /home/dbre_admin/.kube/config
+        chown -R dbre_admin:dbre_admin /home/dbre_admin/.kube
+
+    - name: 4.1.5 Transferir manifiesto de ClickHouse
+      copy:
+        src: clickhouse-instance.yaml
+        dest: /home/dbre_admin/clickhouse-instance.yaml
+        owner: dbre_admin
+        group: dbre_admin
+        mode: '0644'
+
+    - name: 4.2 Desplegar ClickHouse y Puente Postgres
+      become: yes
+      become_user: dbre_admin
+      shell: |
+        export KUBECONFIG=/home/dbre_admin/.kube/config
+
+        # Crear Namespace e instalar Operador
+        kubectl create namespace sql-analitica --dry-run=client -o yaml | kubectl apply -f -
+        kubectl apply -f https://raw.githubusercontent.com/Altinity/clickhouse-operator/master/deploy/operator/clickhouse-operator-install-bundle.yaml
+
+        # 1. Esperar al Operador (Esto funciona bien)
+        kubectl wait --for=condition=Available deployment/clickhouse-operator -n kube-system --timeout=120s
+
+        # 2. Aplicar la instancia
+        kubectl apply -f /home/dbre_admin/clickhouse-instance.yaml
+
+        # 3. ESPERA ROBUSTA: Esperar a que el recurso CHI aparezca
+        echo "Esperando a que el operador reconozca el recurso CHI..."
+        until kubectl get chi -n sql-analitica lab-clickhouse >/dev/null 2>&1; do
+          sleep 5
+        done
+
+        # 4. Esperar al Pod usando un selector más seguro y dinámico
+        echo "Esperando a que el Pod esté Ready..."
+        # Usamos un wait sobre el selector de la instancia, con un timeout largo
+        kubectl wait --for=condition=Ready pod -l app=clickhouse -n sql-analitica --timeout=600s
+
+        # 5. Esperar a que el Service tenga una IP asignada (ClusterIP)
+        echo "Validando Service..."
+        kubectl wait --for=jsonpath='{.spec.clusterIP}' service/chi-lab-clickhouse-lab-cluster-0-0 -n sql-analitica --timeout=60s
+
+        # 6. Crear la federación con reintentos (ClickHouse puede tardar en responder al puerto 9000)
+        echo "Creando base de datos federada..."
+        SUCCESS=0
+        for i in {1..10}; do
+          if kubectl exec -n sql-analitica svc/chi-lab-clickhouse-lab-cluster-0-0 -- clickhouse-client -q \
+            "CREATE DATABASE IF NOT EXISTS pg_lab ENGINE = PostgreSQL('192.168.1.201:5432', 'pg_lab', 'postgres', 'SoporteDBA');" 2>/dev/null; then
+            SUCCESS=1
+            break
+          fi
+          echo "Reintentando conexión con ClickHouse... ($i/10)"
+          sleep 10
+        done
+
+        if [ $SUCCESS -eq 0 ]; then
+          echo "Error: No se pudo conectar con ClickHouse para crear la federación"
+          exit 1
+        fi
+      args:
+        executable: /bin/bash
+
+# ==========================================
+# FASE 5: HEALTH CHECK FINAL (Validación)
+# ==========================================
+- name: Validación Final del Laboratorio
+  hosts: localhost
+  tasks:
+    - name: Check 1 - Storage (.200)
+      command: curl -Is http://192.168.1.200:9000
+      register: storage_check
+      ignore_errors: yes
+
+    - name: Check 2 - Database (.201)
+      command: nc -zv 192.168.1.201 5432
+      register: db_check
+      ignore_errors: yes
+
+    - name: Check 3 - Analytics (.203)
+      command: ssh dbre_admin@192.168.1.203 "KUBECONFIG=~/.kube/config kubectl get pods -n sql-analitica"
+      register: k8s_check
+      ignore_errors: yes
+
+    - name: Reporte de Salud del Lab
+      debug:
+        msg:
+          - "-------------------------------------------"
+          - "Storage  (.200): {{ (storage_check.rc == 0) | ternary('UP', 'DOWN') }}"
+          - "Database (.201): {{ (db_check.rc == 0) | ternary('UP', 'DOWN') }}"
+          - "Analytics(.203): {{ (k8s_check.rc == 0) | ternary('UP', 'DOWN') }}"
+          - "-------------------------------------------"

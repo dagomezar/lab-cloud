@@ -1,86 +1,94 @@
-# 🚀 Lab Cloud: Automated DBRE Infrastructure (PostgreSQL & MinIO)
+🚀 Lab Cloud: Automated DBRE & Analytics Infrastructure
+This repository contains the complete automation to deploy a hybrid data ecosystem: an S3-compatible storage cluster, a PostgreSQL transactional node, and a Kubernetes-managed ClickHouse analytical cluster, all running on Proxmox VE via IaC.
 
-This repository contains the complete automation to deploy a hybrid data ecosystem: an S3-compatible object storage cluster (**MinIO**) and an optimized **PostgreSQL** database node, all running on **Proxmox VE** via Infrastructure as Code (IaC).
+🏗️ Technical Architecture
+The infrastructure consists of three specialized nodes managed as code:
 
-## 🏗️ Technical Architecture
+VM 200 (MinIO Storage): S3-compatible server for backups and objects. Runs Dockerized MinIO with a dedicated 15GB XFS volume.
 
-The infrastructure consists of two specialized nodes managed as code:
+VM 201 (PostgreSQL Legacy): Bare-metal PostgreSQL 16 node. Acts as the OLTP (Transactional) source with optimized memory parameters.
 
-- **VM 200 (MinIO Storage):** S3-compatible server for backups and objects. Runs Dockerized MinIO with a dedicated 15GB XFS volume for data persistence.
-- **VM 201 (PostgreSQL Legacy):** Bare-metal PostgreSQL 16 node. Optimized for high-performance workloads with 8GB of RAM and tuned memory parameters.
-- **Network:** Private lab network (192.168.1.0/24) with passwordless SSH access via Cloud-Init.
+VM 203 (K8s Analytics): Kubernetes node (k3s/kubeadm) running the Altinity ClickHouse Operator. Acts as the OLAP (Analytical) engine.
 
----
+Network: Private lab network (192.168.1.0/24).
 
-## 🏗️ Technical Challenge
-The main challenge involved **hybrid orchestration and DBRE principles**:
-1. **Proxmox Provisioning:** Dynamic VM creation based on Ubuntu 24.04 Cloud-Init templates using Terraform.
-2. **Storage Management:** Automating detection, partitioning (XFS), and mounting of secondary disks for persistence.
-3. **Database Tuning:** Configuring a "bare-metal" Postgres instance to utilize 8GB of RAM effectively (moving away from default restricted settings).
-4. **Backup Pipeline:** Implementing a streaming backup strategy from PostgreSQL to S3 (MinIO) without local disk overhead.
+🏗️ Technical Challenges & Solutions
+Nested Virtualization (AMD): Enabled KVM nesting to allow the ClickHouse Pod to utilize high-performance CPU instructions within a virtualized K8s node.
 
----
+LVM Thin Provisioning: Managed Proxmox storage exhaustion by dynamically extending LVM Thin Pools (pve/data) to prevent VM "IO Errors".
 
-## ⚡ Simulated Scenario
-**Scenario:** "We need a development environment for database backups that does not rely on public cloud costs, while maintaining full S3 API compatibility and a high-performance database instance."
+Data Federation: Configured ClickHouse to query PostgreSQL in real-time using the PostgreSQL engine, enabling cross-database joins without ETL overhead.
 
-**Problems Solved:**
-* **Shadow IT:** Avoids using personal public cloud accounts for sensitive database backups.
-* **Manual Configuration:** Eliminates human error in installing Docker or tuning `postgresql.conf` manually.
-* **Persistence:** Decouples the OS from data volumes (S3) and ensures DB settings persist via `ALTER SYSTEM`.
+K8s Operator Pattern: Automated the lifecycle of ClickHouse clusters using a Custom Resource Definition (CHI).
 
----
+⚡ Simulated Scenario
+Scenario: "The company needs to perform real-time analytics on production PostgreSQL data without impacting its performance, utilizing a scalable Kubernetes environment for the analytical workload."
 
-## 🛠️ Implemented Solution
+Problems Solved:
 
-### 1. Infrastructure Layer (Terraform)
-Located in `/terraform`, it handles:
-* Connecting to the Proxmox API and cloning OS templates.
-* Injecting public SSH keys for secure access.
-* Defining virtual hardware (CPU, RAM, Disks) for both Storage and DB nodes.
+Data Silos: Connects Legacy SQL with Modern Analytics.
 
-### 2. Configuration Layer (Ansible)
-Located in `/ansible`, it handles:
-* **Storage Node (.200):** * Formatting `/dev/sdb` as XFS and mounting it to `/mnt/data`.
-    * Deploying MinIO via Docker with mapped volumes.
-* **Database Node (.201):** * Installation of PostgreSQL 16.
-    * **Performance Tuning:** Automated memory optimization (`shared_buffers = 2GB`, `effective_cache_size = 6GB`).
-    * **Remote Access:** Configuring `pg_hba.conf` and listeners for local network access.
-    * **Disaster Recovery:** Automated Cron job (02:00 AM) that streams `pg_dumpall` directly to the MinIO S3 bucket using `mc pipe`.
+Resource Contention: Moves heavy analytical queries from Postgres to ClickHouse.
 
----
+Infrastructure Scalability: Uses K8s to manage the analytical cluster growth.
 
-## 🚀 How to Deploy
+🛠️ Implemented Solution
+1. Infrastructure Layer (Terraform)
+Handles the lifecycle of VMs in Proxmox, including:
 
-1. **Clone the repo:** ```bash
-   git clone [https://github.com/dagomezar/lab-cloud.git](https://github.com/dagomezar/lab-cloud.git)
+Cloud-Init for user provisioning (dbre_admin) and SSH key injection.
 
-2. **Provision Infrastructure:
-   cd terraform
-   terraform init
-   terraform apply
+Multi-disk setup: Specific volumes for OS and Data persistence.
 
-3. **Configure Nodes:
-   cd ../ansible
-   ansible-playbook -i inventory.ini setup_node.yml --ask-become-pass
+2. Configuration & Orchestration (Ansible)
+PostgreSQL Tuning (.201): Automated shared_buffers and effective_cache_size configuration based on VM RAM.
 
+Kubernetes Analytics (.203):
 
-## 🔍Verification & DBRE Checks
-   Verify the database optimization:
+Automated K8s node setup.
 
-## Check shared memory (Should return 2GB)
-   sudo -u postgres psql -c "SHOW shared_buffers;"
+Deployment of the Altinity ClickHouse Operator.
 
-## Verify MinIO connectivity from the DB node
-   sudo -u postgres mc ls lab-s3/db-backups
+Provisioning of a ClickHouseInstallation (CHI) and automatic creation of the Federated Database (pg_lab).
 
-# 📋 Requirements
-   Proxmox VE 7.x/8.x.
-   
-   Ubuntu 24.04 Cloud Image (Template).
-   
-   Terraform & Ansible installed on the control machine (Mac/Linux).
+Health Check Suite: Final validation phase checking connectivity across all 3 nodes (MinIO, Postgres, K8s).
 
+🚀 How to Deploy
+Clone the repo:
+
+Bash
+git clone https://github.com/dagomezar/lab-cloud.git
+Provision Infrastructure:
+
+Bash
+cd terraform && terraform init && terraform apply
+Configure Everything (Full Stack):
+
+Bash
+cd ../ansible && ansible-playbook -i inventory.ini setup_node.yml
+🔍 Verification & DBRE Checks
+Federated Query Test (Postgres -> ClickHouse)
+From the K8s node, verify you can see the Postgres data from ClickHouse:
+
+Bash
+kubectl exec -it -n sql-analitica svc/chi-lab-clickhouse-lab-cluster-0-0 -- clickhouse-client -q "SELECT * FROM pg_lab.productos_nombres LIMIT 5;"
+Storage Health
+Bash
+# Check Proxmox Thin Pool status
+lvs -a
+🛠️ Troubleshooting (Lessons Learned)
+No route to host (Terraform): Often caused by stale ARP cache or API proxy issues. Clear with sudo arp -d <IP> and restart pveproxy.
+
+IO Error on VMs: Usually indicates the Proxmox Thin Pool is full. Extend with lvextend --extra 10G pve/data.
+
+ClickHouse Pending Pods: Ensure the Proxmox VM has the "Host" CPU type enabled for nested virtualization support.
+
+📋 Requirements
+Proxmox VE 8.x with LVM-Thin storage.
+
+Ubuntu 24.04 Cloud Image.
+
+Ansible 2.15+ & Terraform 1.5+.
 
 
 

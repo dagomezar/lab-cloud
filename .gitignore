@@ -1,16 +1,22 @@
-# Terraform
-**/terraform/.terraform/
-**/*.tfstate
-**/*.tfstate.backup
-**/*.tfvars
-**/*.log
+# 1. Terraform - Archivos de estado y binarios
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+# MUY IMPORTANTE: Tus credenciales reales
+terraform.tfvars
 
-# Claves SSH (por si acaso generas alguna aquí)
-*.pub
-id_rsa_lab
+# 2. Logs de ejecución (son muy pesados y tienen IPs/detalles internos)
+*.log
+despliegue_completo.log
+terraform/terraform-proxmox.log
 
-# Sistema
+# 3. Archivos de respaldo y basura de edición
+*.last
+*.bad
+*.mal
+*.txt
+prueba_final.txt
+
+# 4. Archivos del sistema
 .DS_Store
-
-
-
